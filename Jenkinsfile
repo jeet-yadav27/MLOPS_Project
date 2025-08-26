@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         VENV_DIR = 'venv'
-        GCP_PROJECT = "My First Project"
+        GCP_PROJECT = "learned-cosine-468917-e9"
         GCLOUD_PATH = "/var/jenkins_home/google-cloud-sdk/bin"
     }
 
