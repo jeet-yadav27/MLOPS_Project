@@ -2,58 +2,65 @@ pipeline {
     agent any
 
     environment {
-        VENV_DIR = 'venv'
-        GCP_PROJECT = "learned-cosine-468917-e9"
-        GCLOUD_PATH = "/var/jenkins_home/google-cloud-sdk/bin"
+        VENV_DIR     = 'venv'
+        GCP_PROJECT  = "learned-cosine-468917-e9"
+        GCLOUD_PATH  = "/var/jenkins_home/google-cloud-sdk/bin"
+        IMAGE_NAME   = "gcr.io/${GCP_PROJECT}/ml-project:latest"
     }
 
     stages {
-        stage('Cloning Github repo to Jenkins') {
+        stage('Clone repo') {
             steps {
-                script {
-                    echo 'Cloning Github repo to Jenkins............'
-                    checkout scmGit(
-                        branches: [[name: '*/main']],
-                        extensions: [],
-                        userRemoteConfigs: [[
-                            credentialsId: 'github-token',
-                            url: 'https://github.com/jeet-yadav27/MLOPS_Project.git'
-                        ]]
-                    )
-                }
+                echo 'Cloning GitHub repository...'
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[
+                        credentialsId: 'github-token',
+                        url: 'https://github.com/jeet-yadav27/MLOPS_Project.git'
+                    ]]
+                ])
             }
         }
 
-        stage('Setting up our Virtual Environment and Installing dependencies') {
+        stage('Set up venv & install deps') {
             steps {
-                script {
-                    echo 'Setting up our Virtual Environment and Installing dependencies............'
+                echo 'Setting up Python virtual environment...'
+                sh '''
+                    python -m venv ${VENV_DIR}
+                    . ${VENV_DIR}/bin/activate
+                    pip install --upgrade pip
+                    pip install -e .
+                '''
+            }
+        }
+
+        stage('Build & push Docker image') {
+            steps {
+                withCredentials([file(credentialsId: 'gcp-key', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
                     sh '''
-                        python -m venv ${VENV_DIR}
-                        . ${VENV_DIR}/bin/activate
-                        pip install --upgrade pip
-                        pip install -e .
+                        export PATH=$PATH:${GCLOUD_PATH}
+                        gcloud auth activate-service-account --key-file=${GOOGLE_APPLICATION_CREDENTIALS}
+                        gcloud config set project ${GCP_PROJECT}
+                        gcloud auth configure-docker --quiet
+
+                        docker build -t ${IMAGE_NAME} .
+                        docker push ${IMAGE_NAME}
                     '''
                 }
             }
         }
 
-        stage('Building and Pushing Docker Image to GCR') {
+        stage('Run pipeline in container') {
             steps {
                 withCredentials([file(credentialsId: 'gcp-key', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
-                    script {
-                        echo 'Building and Pushing Docker Image to GCR.............'
-                        sh '''
-                            export PATH=$PATH:${GCLOUD_PATH}
-
-                            gcloud auth activate-service-account --key-file=${GOOGLE_APPLICATION_CREDENTIALS}
-                            gcloud config set project ${GCP_PROJECT}
-                            gcloud auth configure-docker --quiet
-
-                            docker build -t gcr.io/${GCP_PROJECT}/ml-project:latest .
-                            docker push gcr.io/${GCP_PROJECT}/ml-project:latest
-                        '''
-                    }
+                    sh '''
+                        echo "Running training pipeline inside container..."
+                        docker run --rm \
+                          -e GOOGLE_APPLICATION_CREDENTIALS=/app/sa.json \
+                          -v ${GOOGLE_APPLICATION_CREDENTIALS}:/app/sa.json:ro \
+                          ${IMAGE_NAME} bash -c "python pipeline/training_pipeline.py && python application.py"
+                    '''
                 }
             }
         }
