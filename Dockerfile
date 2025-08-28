@@ -1,39 +1,68 @@
-# Use a lightweight Python image
-FROM python:slim
+pipeline {
+    agent any
 
-# Set environment variables to prevent Python from writing .pyc files & Ensure Python output is not buffered
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    environment {
+        VENV_DIR     = 'venv'
+        GCP_PROJECT  = "learned-cosine-468917-e9"
+        GCLOUD_PATH  = "/var/jenkins_home/google-cloud-sdk/bin"
+        IMAGE_NAME   = "gcr.io/${GCP_PROJECT}/ml-project:latest"
+    }
 
-# Set the working directory
-WORKDIR /app
+    stages {
+        stage('Clone repo') {
+            steps {
+                echo 'Cloning GitHub repository...'
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[
+                        credentialsId: 'github-token',
+                        url: 'https://github.com/jeet-yadav27/MLOPS_Project.git'
+                    ]]
+                ])
+            }
+        }
 
-# Install system dependencies required by LightGBM
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgomp1 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+        stage('Set up venv & install deps') {
+            steps {
+                echo 'Setting up Python virtual environment...'
+                sh '''
+                    python -m venv ${VENV_DIR}
+                    . ${VENV_DIR}/bin/activate
+                    pip install --upgrade pip
+                    pip install -e .
+                '''
+            }
+        }
 
-# Copy the application code
-COPY . .
+        stage('Build & push Docker image') {
+            steps {
+                withCredentials([file(credentialsId: 'gcp-key', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+                    sh '''
+                        export PATH=$PATH:${GCLOUD_PATH}
+                        gcloud auth activate-service-account --key-file=${GOOGLE_APPLICATION_CREDENTIALS}
+                        gcloud config set project ${GCP_PROJECT}
+                        gcloud auth configure-docker --quiet
 
-# Install the package in editable mode
-RUN pip install --no-cache-dir -e .
+                        docker build -t ${IMAGE_NAME} .
+                        docker push ${IMAGE_NAME}
+                    '''
+                }
+            }
+        }
 
-# Train the model before running the application
-# RUN python pipeline/training_pipeline.py
-# RUN python pipeline/training_pipeline.py 2>&1
-
-# Remove this line from Dockerfile
-RUN python pipeline/training_pipeline.py 2>&1
-
-# Update CMD to run training before starting the app
-# CMD ["bash", "-c", "python pipeline/training_pipeline.py && python application.py"]
-
-# Expose the port that Flask will run on
-EXPOSE 5000
-
-# Command to run the app
-CMD ["python", "application.py"]
-
-
+        stage('Run pipeline in container') {
+            steps {
+                withCredentials([file(credentialsId: 'gcp-key', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+                    sh '''
+                        echo "Running training pipeline inside container..."
+                        docker run --rm \
+                          -e GOOGLE_APPLICATION_CREDENTIALS=/app/sa.json \
+                          -v ${GOOGLE_APPLICATION_CREDENTIALS}:/app/sa.json:ro \
+                          ${IMAGE_NAME} bash -c "python pipeline/training_pipeline.py && python application.py"
+                    '''
+                }
+            }
+        }
+    }
+}
