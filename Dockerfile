@@ -22,10 +22,17 @@ RUN pip install --no-cache-dir -e .
 
 # Train the model before running the application
 # RUN python pipeline/training_pipeline.py
-RUN python pipeline/training_pipeline.py 2>&1
+# RUN python pipeline/training_pipeline.py 2>&1
+
+# Remove this line from Dockerfile
+# RUN python pipeline/training_pipeline.py 2>&1
+
+# Update CMD to run training before starting the app
+CMD ["bash", "-c", "python pipeline/training_pipeline.py && python application.py"]
 
 # Expose the port that Flask will run on
 EXPOSE 5000
 
 # Command to run the app
 CMD ["python", "application.py"]
+
